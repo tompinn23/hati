@@ -1,6 +1,8 @@
 #include "dl.h"
 #include "log.h"
 
+
+
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -159,6 +161,12 @@ static int curl_check_finished(CURLM *multi, CURLMsg *msg, int *active_dl) {
     CURL *curl = msg->easy_handle;
     CURLcode curlerr;
     char *effective_url;
+    long timecond;
+    curl_off_t remote_size;
+    curl_off_t bytes_dl = 0;
+    long remote_time = -1;
+    struct stat st;
+    int ret;
 
     curlerr = curl_easy_getinfo(curl, CURLINFO_PRIVATE, &dl);
     if(curlerr != CURLE_OK) {
@@ -170,12 +178,62 @@ static int curl_check_finished(CURLM *multi, CURLMsg *msg, int *active_dl) {
     switch(curlerr) {
         case CURLE_OK:
             if(dl->response_code >= 400) {
-                
+                snprintf(dl->error_buffer, sizeof(dl->error_buffer), "The requested URL returned error: %ld", dl->response_code);
+                un_log(LOG_ERR, "failed retrieving file '%s' from %s: %s", dl->filename, dl->url, dl->error_buffer);
+                dl->unlink_on_err = 1;
+                goto cleanup;
             }
+            break;
+        case CURLE_COULDNT_RESOLVE_HOST:
+            un_log(LOG_ERR, "failed to resolve host %s", dl->url);
+            goto cleanup;
+        default:
+            un_log(LOG_ERR, "failed retrieving file '%s' from %s", dl->filename, dl->url);
+            if(fstat(dl->tmpfd, &st) == 0 && st.st_size == 0) {
+                dl->unlink_on_err = 1;
+            }
+            goto cleanup;
+    }
+
+    curl_easy_getinfo(curl, CURLINFO_FILETIME, &remote_time);
+    curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &remote_size);
+    curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD_T, &bytes_dl);
+    curl_easy_getinfo(curl, CURLINFO_CONDITION_UNMET, &timecond);
+    curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &effective_url);
+
+    if(timecond == 1 && bytes_dl == 0) {
+        ret = 1;
+        unlinkat(dl->tmpfd, dl->tmpfilename, 0);
+        goto cleanup;
+    }
+
+    if(remote_size != -1 && bytes_dl != -1 &&
+        bytes_dl != remote_size) {
+        un_log(LOG_ERR, "%s appears to be truncated: %jd/%jd bytes", dl->filename, (intmax_t)bytes_dl, (intmax_t)remote_size);
+        goto cleanup;
+    }
+
+    ret = 0;
+
+cleanup:
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, (char*)NULL);
+
+    struct timespec utime[2] = {
+         {.tv_sec = remote_time, .tv_nsec = 0},
+         {.tv_sec = remote_time, .tv_nsec = 0},
+    };
+    futimens(dl->tmpfd, utime);
+    close(dl->tmpfd);
+
+    if(ret == 0) {
+        if(renameat(dl->dirfd, dl->tmpfilename, dl->dirfd, dl->filename)) {
+            ret = -1;
+        }
     }
 }
 
-int hati_dl_operate(struct hati_list *downloads, int max_dl, const char *download_dir) {
+int hati_dl_operate(struct hati_list *downloads, int max_dl, const char *download_dir, hati_dl_callback callback) {
     int active_dl = 0;
     int dirfd = -1;
     char tmpbuf[4096];
@@ -184,13 +242,14 @@ int hati_dl_operate(struct hati_list *downloads, int max_dl, const char *downloa
     size_t dlsize = hati_list_length(downloads);
     CURLM *multi = curl_multi_init();
 
-    dirfd = open(download_dir, O_PATH);
+    dirfd = open(download_dir, __O_PATH);
 
     struct hati_list *cur = downloads;
     while(active_dl > 0 || cur) {
         CURLMcode mc;
         while(active_dl < max_dl && cur) {
             hati_dl *dl = container_of(cur, dl, list);
+            dl->callback = callback;
             if(curl_add_dl(multi, dl, download_dir) == 0) {
                 cur = cur->next;
             } else {

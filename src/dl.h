@@ -1,5 +1,6 @@
 #pragma once
 
+
 #include "list.h"
 
 #include <stdio.h>
@@ -38,6 +39,7 @@ typedef struct hati_dl {
     off_t prev_progress;
     int dirfd;
     int tmpfd;
+    int unlink_on_err;
 } hati_dl;
 
 typedef struct hati_dl_progress_data {
@@ -52,4 +54,4 @@ typedef struct hati_dl_complete_data {
 
 hati_dl *hati_dl_new(const char *url);
 
-int hati_dl_operate(struct hati_list *downloads, int max_dl, const char *download_dir);
+int hati_dl_operate(struct hati_list *downloads, int max_dl, const char *download_dir, hati_dl_callback callback);

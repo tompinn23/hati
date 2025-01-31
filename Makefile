@@ -2,6 +2,7 @@ MAKEFLAGS += -rR
 .SUFFIXES:
 
 CC := gcc
+CFLAGS := -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE=1
 
 lib_cflags := $(shell pkg-config --cflags libcurl)
 libs := $(shell pkg-config --libs libcurl)
@@ -12,7 +13,7 @@ objects := src/main.o src/dl.o src/log.o src/list.o
 all: hati
 
 hati: $(addprefix obj/, $(objects))
-	$(CC) $(LDFLAGS) $(libs) -o $@ $^
+	$(CC) -o $@ $^ $(LDFLAGS) $(libs)
 
 .PHONY: clean
 clean:
